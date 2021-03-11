@@ -117,8 +117,10 @@ class ApiMailAdapter extends MailAdapter {
   async _sendMail(email) {
 
     // Define parameters
-    let user, message;
+    let message;
     const templateName = email.templateName;
+    // Get user from email object
+    const user = email.user;
 
     // If template name is not set
     if (!templateName) {
@@ -166,7 +168,6 @@ class ApiMailAdapter extends MailAdapter {
     } else {
       // Get email parameters
       const { link, appName } = email;
-      user = email.user;
 
       // Add default placeholders for templates
       Object.assign(placeholders, {
