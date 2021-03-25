@@ -123,13 +123,36 @@ describe('ApiMailAdapter', () => {
       }
     });
 
-    it('fails with invalid placeholder callback configuration', async () => {
+    it('fails with invalid placeholder callback', async () => {
       const configs = [
         { apiCallback: df, sender: ds, templates: { customEmail: { subjectPath: ds, textPath: ds, placeholderCallback: {} } } },
         { apiCallback: df, sender: ds, templates: { customEmail: { subjectPath: ds, textPath: ds, placeholderCallback: ds } } }
       ];
       for (const config of configs) {
         expect(adapter(config)).toThrow(Errors.Error.templateCallbackNoFunction);
+      }
+    });
+
+    it('fails with missing or invalid API callback', async () => {
+      const configs = [
+        { sender: ds, templates: { customEmail: { subjectPath: ds, textPath: ds } } },
+        { apiCallback: null, sender: ds, templates: { customEmail: { subjectPath: ds, textPath: ds } } },
+        { apiCallback: true, sender: ds, templates: { customEmail: { subjectPath: ds, textPath: ds } } },
+        { apiCallback: ds, sender: ds, templates: { customEmail: { subjectPath: ds, textPath: ds } } },
+      ];
+      for (const config of configs) {
+        expect(adapter(config)).toThrow(Errors.Error.apiCallbackNoFunction);
+      }
+    });
+
+    it('fails with invalid locale callback', async () => {
+      const configs = [
+        { apiCallback: df, sender: ds, templates: { customEmail: { subjectPath: ds, textPath: ds, localeCallback: ds } } },
+        { apiCallback: df, sender: ds, templates: { customEmail: { subjectPath: ds, textPath: ds, localeCallback: true } } },
+        { apiCallback: df, sender: ds, templates: { customEmail: { subjectPath: ds, textPath: ds, localeCallback: [] } } },
+      ];
+      for (const config of configs) {
+        expect(adapter(config)).toThrow(Errors.Error.localeCallbackNoFunction);
       }
     });
 
@@ -219,12 +242,70 @@ describe('ApiMailAdapter', () => {
         },
         extra: {
           field: "ExampleExtra"
-        }
+        },
+        user: undefined,
       };
       const expectedArguments = Object.assign({}, options, { direct: true });
 
       await expectAsync(adapter.sendMail(options)).toBeResolved();
       expect(_sendMail.calls.all()[0].args[0]).toEqual(expectedArguments);
+    });
+
+    it('allows sendMail() without using a template', async () => {
+      const adapter = new ApiMailAdapter(config);
+      const apiCallbackSpy = spyOn(adapter, 'apiCallback').and.callFake(apiResponseSuccess);
+      const options = {
+        sender: config.sender,
+        recipient: 'to@example.com',
+        subject: 'ExampleSubject',
+        text: 'ExampleText',
+        html: 'ExampleHtml',
+      };
+
+      await expectAsync(adapter.sendMail(options)).toBeResolved();
+      const apiPayload = apiCallbackSpy.calls.all()[0].args[0].payload;
+      expect(apiPayload.from).toEqual(options.sender);
+      expect(apiPayload.to).toEqual(options.recipient);
+      expect(apiPayload.subject).toEqual(options.subject);
+      expect(apiPayload.text).toEqual(options.text);
+      expect(apiPayload.html).toEqual(options.html);
+    });
+
+    it('passes user to callback when user is passed to sendMail()', async () => {
+      const adapter = new ApiMailAdapter(config);
+      const localeCallbackSpy = spyOn(config.templates.customEmailWithLocaleCallback, 'localeCallback').and.callThrough();
+      const options = {
+        templateName: 'customEmailWithLocaleCallback',
+        user: new Parse.User(),
+      };
+
+      await expectAsync(adapter.sendMail(options)).toBeResolved();
+      expect(localeCallbackSpy.calls.all()[0].args[0].get('locale')).toBe(options.user.get('locale'));
+    });
+
+    it('uses user email if no recipient is passed to sendMail()', async () => {
+      const adapter = new ApiMailAdapter(config);
+      const apiCallbackSpy = spyOn(adapter, 'apiCallback').and.callThrough();
+      const options = {
+        templateName: 'customEmailWithLocaleCallback',
+        user: new Parse.User(),
+      };
+
+      await expectAsync(adapter.sendMail(options)).toBeResolved();
+      expect(apiCallbackSpy.calls.all()[0].args[0].payload.to).toBe(options.user.get('email'));
+    });
+
+    it('overrides user email if recipient is passed to sendMail()', async () => {
+      const adapter = new ApiMailAdapter(config);
+      const apiCallbackSpy = spyOn(adapter, 'apiCallback').and.callThrough();
+      const options = {
+        recipient: 'override@example.com',
+        templateName: 'customEmailWithLocaleCallback',
+        user: new Parse.User(),
+      };
+
+      await expectAsync(adapter.sendMail(options)).toBeResolved();
+      expect(apiCallbackSpy.calls.all()[0].args[0].payload.to).toBe(options.recipient);
     });
   });
 
@@ -324,7 +405,6 @@ describe('ApiMailAdapter', () => {
       const adapter = new ApiMailAdapter(config);
       const configs = [
         { templateName: 'invalid' },
-        { templateName: 'invalid', direct: true }
       ];
       for (const config of configs) {
         await expectAsync(adapter._sendMail(config)).toBeRejectedWith(Errors.Error.noTemplateWithName('invalid'));
@@ -569,7 +649,7 @@ describe('ApiMailAdapter', () => {
       expect(htmlSpyData.toString('utf8')).toEqual(htmlFileData.toString('utf8'));
     });
 
-    it('falls back to default file if there is no language or locale match', async function () {
+    it('falls back to default file if there is no language or locale match', async () => {
       // Pretend that there are no files in folders `de-AT` and `de`
       spyOn(adapter, '_fileExists').and.callFake(async (path) => {
         return !/\/templates\/de(-AT)?\//.test(path);
@@ -587,6 +667,16 @@ describe('ApiMailAdapter', () => {
       expect(subjectSpyData.toString('utf8')).toEqual(subjectFileData.toString('utf8'));
       expect(textSpyData.toString('utf8')).toEqual(textFileData.toString('utf8'));
       expect(htmlSpyData.toString('utf8')).toEqual(htmlFileData.toString('utf8'));
+    });
+
+    it('falls back to default file if file access throws', async () => {
+      const getLocalizedFilePathSpy = spyOn(adapter, '_getLocalizedFilePath').and.callThrough();
+      spyOn(fs, 'access').and.callFake(async () => {
+        throw 'Test file access error';
+      });
+      await adapter._createApiData(options);
+      const file = await getLocalizedFilePathSpy.calls.all()[0].returnValue;
+      expect(file).toMatch(options.template.subjectPath);
     });
 
     it('makes user locale available in API callback', async () => {

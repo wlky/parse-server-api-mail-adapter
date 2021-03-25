@@ -30,7 +30,7 @@ class ApiMailAdapter extends MailAdapter {
 
     // Ensure API callback is set
     if (typeof apiCallback !== 'function') {
-      throw Errors.Error.apiClientCallbackNoFuncion;
+      throw Errors.Error.apiCallbackNoFunction;
     }
 
     // Initialize
@@ -83,18 +83,19 @@ class ApiMailAdapter extends MailAdapter {
 
   /**
    * @function sendMail
-   * @desciption Sends an email.
+   * @description Sends an email.
    * @param {String} [sender] The email from address.
-   * @param {String} recipient The email recipient.
+   * @param {String} recipient The email recipient; if set overrides the email address of the `user`.
    * @param {String} [subject] The email subject.
    * @param {String} [text] The plain-text email content.
    * @param {String} [html] The HTML email content.
    * @param {String} [templateName] The template name.
-   * @param {String} [placeholders] The template placeholders.
-   * @param {String} [extra] Any additional variables to pass to the mail provider API.
+   * @param {Object} [placeholders] The template placeholders.
+   * @param {Object} [extra] Any additional variables to pass to the mail provider API.
+   * @param {Parse.User} [user] The Parse User that the is the recipient of the email.
    * @returns {Promise<Any>} The mail provider API response.
    */
-  async sendMail({ sender, recipient, subject, text, html, templateName, placeholders, extra }) {
+  async sendMail({ sender, recipient, subject, text, html, templateName, placeholders, extra, user }) {
     return await this._sendMail({
       sender,
       recipient,
@@ -104,6 +105,7 @@ class ApiMailAdapter extends MailAdapter {
       templateName,
       placeholders,
       extra,
+      user,
       direct: true
     });
   }
@@ -117,11 +119,13 @@ class ApiMailAdapter extends MailAdapter {
   async _sendMail(email) {
 
     // Define parameters
-    let user, message;
+    let message;
+    const user = email.user;
+    const userEmail = user ? user.get('email') : undefined;
     const templateName = email.templateName;
 
     // If template name is not set
-    if (!templateName) {
+    if (!templateName && !email.direct) {
       throw Errors.Error.templateConfigurationNoName;
     }
 
@@ -129,7 +133,7 @@ class ApiMailAdapter extends MailAdapter {
     const template = this.templates[templateName];
 
     // If template does not exist
-    if (!template) {
+    if (!template && !email.direct) {
       throw Errors.Error.noTemplateWithName(templateName);
     }
 
@@ -138,13 +142,18 @@ class ApiMailAdapter extends MailAdapter {
     // 1. Placeholders set in the template (default)
     // 2. Placeholders set in the email
     // 3. Placeholders returned by the placeholder callback
-    const placeholders = template.placeholders || {};
+    let placeholders = {};
+
+    // Add template placeholders
+    if (template) {
+      placeholders = Object.assign(placeholders, template.placeholders || {});
+    }
 
     // If the email is sent directly via Cloud Code
     if (email.direct) {
 
       // If recipient is not set
-      if (!email.recipient) {
+      if (!email.recipient && !userEmail) {
         throw Errors.Error.noRecipient;
       }
 
@@ -155,7 +164,7 @@ class ApiMailAdapter extends MailAdapter {
       message = Object.assign(
         {
           from: email.sender || this.sender,
-          to: email.recipient,
+          to: email.recipient || userEmail,
           subject: email.subject,
           text: email.text,
           html: email.html
@@ -166,20 +175,19 @@ class ApiMailAdapter extends MailAdapter {
     } else {
       // Get email parameters
       const { link, appName } = email;
-      user = email.user;
 
       // Add default placeholders for templates
       Object.assign(placeholders, {
         link,
         appName,
-        email: user.get('email'),
+        email: userEmail,
         username: user.get('username')
       });
 
       // Set message properties
       message = {
         from: this.sender,
-        to: user.get('email')
+        to: userEmail
       };
     }
 
@@ -215,7 +223,7 @@ class ApiMailAdapter extends MailAdapter {
    */
   async _createApiData(options) {
     let { message } = options;
-    const { template, user, placeholders = {} } = options;
+    const { template = {}, user, placeholders = {} } = options;
     const { placeholderCallback, localeCallback } = template;
     let locale;
 
@@ -308,7 +316,7 @@ class ApiMailAdapter extends MailAdapter {
    * @description Loads a file's content.
    * @param {String} path The file path.
    * @param {String} locale The locale if a localized version of the file should be
-   * loaded if available, or `undefined` if no localiziation should occur.
+   * loaded if available, or `undefined` if no localization should occur.
    * @returns {Promise<Buffer>} The file content.
    */
   async _loadFile(path, locale) {
@@ -390,7 +398,7 @@ class ApiMailAdapter extends MailAdapter {
    * @function getLocalizedFilePath
    * @description Returns a localized file path matching a given locale.
    *
-   * Localized files are placed in subfolders of the given path, for example:
+   * Localized files are placed in sub-folders of the given path, for example:
    *
    * root/
    * ├── base/                    // base path to files
@@ -411,37 +419,29 @@ class ApiMailAdapter extends MailAdapter {
    * if a localized file could not be determined.
    */
   async _getLocalizedFilePath(filePath, locale) {
-    try {
-      // Get file name and base path
-      const file = path.basename(filePath);
-      const basePath = path.dirname(filePath);
+    // Get file name and base path
+    const file = path.basename(filePath);
+    const basePath = path.dirname(filePath);
 
-      // If locale is not set return default file
-      if (!locale) { return filePath; }
+    // If locale is not set return default file
+    if (!locale) { return filePath; }
 
-      // Check file for locale exists
-      const localePath = path.join(basePath, locale, file);
-      const localeFileExists = await this._fileExists(localePath);
+    // Check file for locale exists
+    const localePath = path.join(basePath, locale, file);
+    const localeFileExists = await this._fileExists(localePath);
 
-      // If file for locale exists return file
-      if (localeFileExists) { return localePath; }
+    // If file for locale exists return file
+    if (localeFileExists) { return localePath; }
 
-      // Check file for language exists
-      const languagePath = path.join(basePath, locale.split("-")[0], file);
-      const languageFileExists = await this._fileExists(languagePath);
+    // Check file for language exists
+    const languagePath = path.join(basePath, locale.split("-")[0], file);
+    const languageFileExists = await this._fileExists(languagePath);
 
-      // If file for language exists return file
-      if (languageFileExists) { return languagePath; }
+    // If file for language exists return file
+    if (languageFileExists) { return languagePath; }
 
-      // Return default file path
-      return filePath;
-
-    } catch (e) {
-      console.log("error in getLocalizedFilePath: " + e);
-
-      // Return default file path
-      return filePath;
-    }
+    // Return default file path
+    return filePath;
   }
 
   /**
